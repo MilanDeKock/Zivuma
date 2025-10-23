@@ -6,7 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Zivuma Bulk Assembly Tool", layout="wide")
+st.set_page_config(page_title="Zivuma Bulk Assembly Tool", page_icon="Zivuma.jpg", layout="wide")
 st.title("Zivuma Bulk Assembly Tool")
 
 # -------------------------
