@@ -1,3 +1,4 @@
+#HBYN
 # app.py
 # deps: pip install streamlit pandas
 
@@ -11,7 +12,7 @@ st.title("Batch → Stock Adjustment (CSV uploads → single output)")
 # -------------------------
 # Config: column mappings
 # -------------------------
-# Availability CSV expected headers (you gave these; we only require a subset):
+# Availability CSV expected headers (you provided; we only require a subset):
 AV = {
     "category": "Category",
     "sku": "SKU",
@@ -64,11 +65,15 @@ ADJ_HEADERS = [
 def read_availability_csv(file) -> pd.DataFrame:
     df = pd.read_csv(file)
     df = df.rename(columns=lambda c: str(c).strip())
-    needed = [AV["sku"], AV["name"], AV["batch"], AV["onhand"], AV["location"], AV["bin"], AV["expiry"]]
+    needed = [
+        AV["sku"], AV["name"], AV["batch"], AV["onhand"],
+        AV["location"], AV["bin"], AV["expiry"], AV["stock_value"]
+    ]
     miss = [c for c in needed if c not in df.columns]
     if miss:
         raise ValueError(f"Availability CSV is missing columns: {miss}")
     df[AV["onhand"]] = pd.to_numeric(df[AV["onhand"]], errors="coerce").fillna(0)
+    df[AV["stock_value"]] = pd.to_numeric(df[AV["stock_value"]], errors="coerce").fillna(0)
     for c in [AV["sku"], AV["name"], AV["batch"], AV["location"], AV["bin"]]:
         df[c] = df[c].astype(str).str.strip()
     return df
@@ -95,6 +100,10 @@ def read_bom_csv(file) -> pd.DataFrame:
     return df
 
 def find_clean_batches(av_df: pd.DataFrame):
+    """
+    Clean batch = all rows for a BatchSerialNumber share the same OnHand and same Location.
+    We only process duplicate batches; singles are ignored.
+    """
     b, q, loc = AV["batch"], AV["onhand"], AV["location"]
     dup = av_df[av_df.duplicated(subset=[b], keep=False)].copy()
     if dup.empty:
@@ -187,7 +196,7 @@ fg_df = bom[["ProductSKU","ProductName"]].drop_duplicates().sort_values("Product
 FG_OPTIONS = fg_df["ProductSKU"].tolist()
 FG_NAME = dict(zip(fg_df["ProductSKU"], fg_df["ProductName"]))
 
-# Starter mapping table
+# Starter mapping table from status
 bcol = AV["batch"]
 map_seed = (
     status.loc[status["is_clean"], [bcol, "shared_loc", "shared_qty"]]
@@ -197,7 +206,7 @@ map_seed = (
 map_seed["Use"] = True
 map_seed["FG_SKU"] = ""
 
-# Editor on one line: Batch | FG (plus readonly Location, FG_Qty)
+# Editor on one line: Use | Batch | FG | Location | FG_Qty
 mapping_df = st.data_editor(
     map_seed[["Use", "Batch", "FG_SKU", "Location", "FG_Qty"]],
     use_container_width=True,
@@ -229,27 +238,59 @@ if _zeroqty.any():
     st.stop()
 
 # -------------------------
-# Build Stock Adjustment (single combined CSV)
-# Components OUT (NonZero; negative qty) + FG IN (Zero; positive qty)
+# STRICT mismatch validation: block if any batch↦FG has extra/missing components
 # -------------------------
-# Precompute BOM components per FG (for warnings)
+# Build BOM components index per FG
 bom_components_by_fg = (
     bom.groupby("ProductSKU")["ComponentSKU"]
        .apply(lambda s: set(s.dropna().astype(str)))
        .to_dict()
 )
 
-# Rows in Availability for selected batches
+# Availability rows only for selected batches (used later too)
 sel_rows = clean_df[clean_df[bcol].isin(mapping_df["Batch"])].copy()
 
-# Components OUT
-comp = sel_rows[[AV["location"], AV["sku"], AV["name"], AV["bin"], AV["batch"], AV["expiry"], AV["onhand"]]].copy()
+errors = []
+for _, r in mapping_df.iterrows():
+    bat = r["Batch"]
+    fg_code = r["FG_SKU"]
+    batch_components = set(sel_rows.loc[sel_rows[bcol] == bat, AV["sku"]].astype(str).unique())
+    bom_set = bom_components_by_fg.get(fg_code, set())
+    extra = sorted(batch_components - bom_set)
+    missing = sorted(bom_set - batch_components)
+    if extra or missing:
+        errors.append(f"{bat} ↦ {fg_code}: extra={extra} | missing={missing}")
+
+if errors:
+    st.error("Component mismatch detected — cannot create stock adjustment:\n- " + "\n- ".join(errors))
+    st.stop()
+
+# -------------------------
+# Build Stock Adjustment (single combined CSV)
+# Components OUT (NonZero; negative qty) + FG IN (Zero; positive qty)
+# Costs and ReceivedDate included
+# -------------------------
+TODAY_YYYYMMDD = datetime.now().strftime("%Y%m%d")
+
+# Components OUT with UnitCost = StockValue / OnHand
+comp = sel_rows[
+    [AV["location"], AV["sku"], AV["name"], AV["bin"], AV["batch"], AV["expiry"], AV["onhand"], AV["stock_value"]]
+].copy()
+
+# Avoid div by zero
+comp["UnitCost"] = comp.apply(
+    lambda r: (float(r[AV["stock_value"]]) / float(r[AV["onhand"]])) if float(r[AV["onhand"]]) != 0 else 0.0,
+    axis=1
+)
+# Optional rounding (comment out if you prefer full precision)
+comp["UnitCost"] = comp["UnitCost"].round(4)
+
 comp["Zero/NonZero"] = "NonZero"
 comp["ExpiryDate_YYYYMMDD"] = comp[AV["expiry"]].map(yyyymmdd)
-comp["Quantity"] = -comp[AV["onhand"]].astype(float)
-comp["UnitCost"] = ""
-comp["Comments"] = "Auto: Consolidate to FG (see mapping)"
-comp["ReceivedDate_YYYYMMDD"] = ""
+comp["Quantity"] = -comp[AV["onhand"]].astype(float)   # negative for OUT
+comp["Comments"] = "Auto: Consolidate to FG (per batch mapping)"
+comp["ReceivedDate_YYYYMMDD"] = TODAY_YYYYMMDD
+
 comps_out = comp.rename(columns={
     AV["location"]: "Location",
     AV["sku"]: "SKU",
@@ -258,11 +299,11 @@ comps_out = comp.rename(columns={
     AV["batch"]: "BatchSerialNumber",
 })[ADJ_HEADERS].copy()
 
-# FG IN (one row per mapping row)
-fg_in_rows = []
-warnings_buf = []
-status_idx = status.set_index(bcol)
+# Sum of StockValue for all component rows within each selected batch (for allocation)
+batch_comp_value = sel_rows.groupby(bcol)[AV["stock_value"]].sum().to_dict()
 
+# FG IN (allocate total component value per batch across FG qty)
+fg_in_rows = []
 for _, r in mapping_df.iterrows():
     bat = r["Batch"]
     fg_code = r["FG_SKU"]
@@ -270,42 +311,36 @@ for _, r in mapping_df.iterrows():
     shared_qty = float(r["FG_Qty"])
     shared_loc = r["Location"]
 
-    # Per-batch mismatch info (non-blocking)
-    batch_components = set(sel_rows.loc[sel_rows[bcol] == bat, AV["sku"]].unique())
-    bom_set = bom_components_by_fg.get(fg_code, set())
-    extra = sorted(batch_components - bom_set)
-    missing = sorted(bom_set - batch_components)
-    if extra or missing:
-        warnings_buf.append(f"{bat} ↦ {fg_code}: extra {extra} | missing {missing}")
+    if shared_qty <= 0:
+        continue
 
-    if shared_qty > 0:
-        fg_in_rows.append({
-            "Zero/NonZero": "Zero",
-            "Location": shared_loc,
-            "SKU": fg_code,
-            "Name": fg_name,
-            "Bin": "",
-            "BatchSerialNumber": bat,   # FG batch = component batch
-            "ExpiryDate_YYYYMMDD": "",
-            "Quantity": shared_qty,
-            "UnitCost": "",
-            "Comments": f"Auto: Consolidate from {bat}",
-            "ReceivedDate_YYYYMMDD": "",
-        })
+    total_value_for_batch = float(batch_comp_value.get(bat, 0.0))
+    fg_unit_cost = (total_value_for_batch / shared_qty) if shared_qty != 0 else 0.0
+    fg_unit_cost = round(fg_unit_cost, 4)  # optional rounding to 4dp
+
+    fg_in_rows.append({
+        "Zero/NonZero": "Zero",
+        "Location": shared_loc,
+        "SKU": fg_code,
+        "Name": fg_name,
+        "Bin": "",
+        "BatchSerialNumber": bat,   # FG batch = component batch
+        "ExpiryDate_YYYYMMDD": "",
+        "Quantity": shared_qty,     # positive for IN
+        "UnitCost": fg_unit_cost,
+        "Comments": f"Auto: Consolidate from {bat}",
+        "ReceivedDate_YYYYMMDD": TODAY_YYYYMMDD,
+    })
 
 fg_in = pd.DataFrame(fg_in_rows, columns=ADJ_HEADERS)
 
-# Optional warnings
-if warnings_buf:
-    st.warning("Component mismatches detected:\n- " + "\n- ".join(warnings_buf))
-
-# Combined output (Components OUT first, then FG IN)
+# Single combined CSV (OUT on top, then IN)
 combined = pd.concat([comps_out, fg_in], ignore_index=True)
 
 # -------------------------
 # Preview & Download (single file)
 # -------------------------
-st.subheader("Preview (single combined output)")
+st.subheader("Preview (single combined output with costs & today's ReceivedDate)")
 st.dataframe(combined, use_container_width=True)
 
 ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -316,4 +351,9 @@ st.download_button(
     mime="text/csv",
 )
 
-st.caption("Rules: OUT → NonZero (Qty = -OnHand); IN → Zero (Qty = shared OnHand per batch). Location comes from Availability; FG batch inherits the component batch. FG per-batch is chosen on the same line as the batch.")
+st.caption(
+    "Rules: OUT → NonZero (Qty = -OnHand; UnitCost = StockValue/OnHand). "
+    "IN → Zero (Qty = shared OnHand per batch; UnitCost allocated so total IN value equals total component value per batch). "
+    "ReceivedDate = today (YYYYMMDD). Location comes from Availability; FG batch inherits the component batch."
+)
+
