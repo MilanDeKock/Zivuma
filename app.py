@@ -11,7 +11,7 @@ import streamlit as st
 st.set_page_config(
     page_title="Zivuma Bulk Assembly Tool",
     page_icon="Zivuma.jpg",
-    layout="wide",
+    layout="centered",
 )
 
 # ---- Header row ----
