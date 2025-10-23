@@ -6,8 +6,8 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Batch → Stock Adjustment (CSV uploads → single output)", layout="wide")
-st.title("Batch → Stock Adjustment (CSV uploads → single output)")
+st.set_page_config(page_title="Zivuma Bulk Assembly Tool", layout="wide")
+st.title("Zivuma Bulk Assembly Tool")
 
 # -------------------------
 # Config: column mappings
