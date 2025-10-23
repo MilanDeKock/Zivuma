@@ -6,7 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Zivuma Bulk Assembly Tool", page_icon="Zivuma.jpg", layout="wide")
+
 # ---- Page setup ----
 st.set_page_config(
     page_title="Zivuma Bulk Assembly Tool",
@@ -17,9 +17,9 @@ st.set_page_config(
 # ---- Header row ----
 col1, col2 = st.columns([1, 8])  # left column narrow, right wide
 with col1:
-    st.image("logo.png", width=70)   # logo on the left
+    st.image("Zivuma.jpg", width=70)   # logo on the left
 with col2:
-    st.title("Zivuma Assembly Adjuster")  # title next to it
+    st.title("Zivuma Bulk Assembly Tool")  # title next to it
 
 
 # -------------------------
