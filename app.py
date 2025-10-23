@@ -208,7 +208,7 @@ map_seed["FG_SKU"] = ""
 
 # Editor on one line: Use | Batch | FG | Location | FG_Qty
 mapping_df = st.data_editor(
-    map_seed[["Use", "Batch", "FG_SKU", "Location", "FG_Qty"]],
+    map_seed[["Use", "Batch", "Finished Goods SKU", "Location", "Finished Goods QTY"]],
     use_container_width=True,
     hide_index=True,
     key="batch_fg_mapping",
@@ -287,7 +287,7 @@ comp["UnitCost"] = comp["UnitCost"].round(4)
 
 comp["Zero/NonZero"] = "NonZero"
 comp["ExpiryDate_YYYYMMDD"] = comp[AV["expiry"]].map(yyyymmdd)
-comp["Quantity"] = -comp[AV["onhand"]].astype(float)   # negative for OUT
+comp["Quantity"] = 0   # negative for OUT
 comp["Comments"] = "Auto: Consolidate to FG (per batch mapping)"
 comp["ReceivedDate_YYYYMMDD"] = TODAY_YYYYMMDD
 
