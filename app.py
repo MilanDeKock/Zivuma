@@ -172,7 +172,7 @@ uploads = st.file_uploader(
 )
 
 if not uploads or len(uploads) < 2:
-    st.info("Please upload **two** CSV files (vailability Report + Assembly BOM Export).")
+    st.info("Please upload **two** CSV files (Availability Report + Assembly BOM Export).")
     st.stop()
 
 # Try to auto-detect which is which
