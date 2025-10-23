@@ -102,7 +102,7 @@ def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = None
     df = df[BOM_COLS].copy()
-    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce")
+    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").astype('Int64')
     for c in ["Action","ProductSKU","ProductName","ComponentSKU","ComponentName"]:
         df[c] = df[c].fillna("").astype(str).str.strip()
     if not df["Quantity"].gt(0).all():
