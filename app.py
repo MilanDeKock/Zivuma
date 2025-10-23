@@ -165,14 +165,14 @@ def yyyymmdd(val):
 # One upload box (two CSVs)
 # -------------------------
 uploads = st.file_uploader(
-    "Upload two CSV files: Availability Report + Assembly BOM",
+    "Upload two CSV files: Availability Report + Assembly BOM Export",
     type=["csv"],
     accept_multiple_files=True,
     key="multi_csv"
 )
 
 if not uploads or len(uploads) < 2:
-    st.info("Please upload **two** CSV files (Availability + BOM).")
+    st.info("Please upload **two** CSV files (vailability Report + Assembly BOM Export).")
     st.stop()
 
 # Try to auto-detect which is which
