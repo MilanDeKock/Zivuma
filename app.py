@@ -213,6 +213,11 @@ if clean_df.empty and mismatch_df.empty:
 #         show = mismatch_df[[AV["batch"], AV["sku"], AV["name"], AV["onhand"], AV["location"]]].copy()
 #         st.dataframe(show.sort_values([AV["batch"], AV["sku"]]), use_container_width=True)
 
+if not mismatch_df.empty:
+    with st.expander("Batches needing inspection (qty/location mismatch)", expanded=False):
+        show = mismatch_df[[AV["batch"], AV["sku"], AV["name"], AV["onhand"], AV["location"]]].copy()
+        st.dataframe(show.sort_values([AV["batch"], AV["sku"]]), use_container_width=True)
+
 if status.empty or status["is_clean"].sum() == 0:
     st.warning("No clean batches to process.")
     st.stop()
@@ -314,7 +319,7 @@ comp["UnitCost"] = comp.apply(
 
 comp["Zero/NonZero"] = "NonZero"
 comp["ExpiryDate_YYYYMMDD"] = comp[AV["expiry"]].map(yyyymmdd)
-comp["Quantity"] = -comp[AV["onhand"]].astype(float)
+comp["Quantity"] = 0
 comp["Comments"] = "Auto: Consolidate to FG (per batch mapping)"
 comp["ReceivedDate_YYYYMMDD"] = TODAY_YYYYMMDD
 
@@ -369,6 +374,8 @@ fg_in = pd.DataFrame(fg_in_rows, columns=ADJ_HEADERS)
 # Combined export: OUT first, then IN
 combined = pd.concat([comps_out, fg_in], ignore_index=True)
 
+st.subheader("Preview (single combined output with costs & today's ReceivedDate)")
+st.dataframe(combined, use_container_width=True)
 # -------------------------
 # Download
 # -------------------------
