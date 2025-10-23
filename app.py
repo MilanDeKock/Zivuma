@@ -238,7 +238,7 @@ if status.empty or status["is_clean"].sum() == 0:
 # -------------------------
 # Per-batch mapping UI (default = not ticked)
 # -------------------------
-st.subheader("Link each clean Batch to a Finished Good (tick + choose FG per row)")
+st.subheader("Link Available Batches to a Finished Good (Tick Box & Choose FG SKU)")
 
 # FG options
 fg_df = bom[["ProductSKU","ProductName"]].drop_duplicates().sort_values("ProductSKU")
@@ -387,7 +387,7 @@ fg_in = pd.DataFrame(fg_in_rows, columns=ADJ_HEADERS)
 # Combined export: OUT first, then IN
 combined = pd.concat([comps_out, fg_in], ignore_index=True)
 
-st.subheader("Preview (single combined output with costs & today's ReceivedDate)")
+st.subheader("Preview of stock adjustment file")
 st.dataframe(combined, use_container_width=True)
 # -------------------------
 # Download
