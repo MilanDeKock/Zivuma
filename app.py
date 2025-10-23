@@ -137,32 +137,36 @@ def yyyymmdd(val):
 # -------------------------
 col1, col2 = st.columns(2)
 with col1:
-    av_file = st.file_uploader("1) Upload Availability Report (Excel; header on row 2)", type=["xlsx","xls"])
+    av_file = st.file_uploader(
+        "1) Upload Availability Report (CSV only)",
+        type=["csv"],
+        key="av_file"
+    )
 with col2:
-    bom_file = st.file_uploader("2) Upload Assembly BOM (CSV or Excel)", type=["csv","xlsx","xls"])
+    bom_file = st.file_uploader(
+        "2) Upload Assembly BOM (CSV only)",
+        type=["csv"],
+        key="bom_file"
+    )
 
 if not av_file or not bom_file:
-    st.info("Upload both files to continue.")
+    st.info("Upload both CSV files to continue.")
     st.stop()
 
 # Parse inputs
 try:
-    av = read_availability(av_file)
+    av = pd.read_csv(av_file)
+    av = av.rename(columns=lambda c: str(c).strip())
 except Exception as e:
-    st.error(f"Failed to read Availability: {e}")
+    st.error(f"Failed to read Availability CSV: {e}")
     st.stop()
 
 try:
-    bom = read_bom(bom_file)
+    bom = pd.read_csv(bom_file)
+    bom = bom.rename(columns=lambda c: str(c).strip())
 except Exception as e:
-    st.error(f"Failed to read BOM: {e}")
+    st.error(f"Failed to read BOM CSV: {e}")
     st.stop()
-
-with st.expander("Preview Availability (first 200 rows)", expanded=False):
-    st.dataframe(av.head(200), use_container_width=True)
-
-with st.expander("Preview BOM (first 200 rows)", expanded=False):
-    st.dataframe(bom.head(200), use_container_width=True)
 
 # -------------------------
 # Clean vs mismatch
