@@ -10,6 +10,21 @@ import streamlit as st
 import gspread
 from gspread_dataframe import set_with_dataframe
 
+def _secrets_ok():
+    try:
+        _ = st.secrets["gcp_service_account"]
+        _ = st.secrets["BOM_SHEET_ID"]
+        return True
+    except Exception:
+        return False
+
+if not _secrets_ok():
+    st.error(
+        "Google Sheets secrets not configured. Add `gcp_service_account` and `BOM_SHEET_ID` to Streamlit secrets "
+        "(see instructions below). For now, you can upload a BOM CSV/XLSX in the Admin page to use it just for this session."
+    )
+
+
 st.set_page_config(page_title="Batch → Stock Adjustment Helper", layout="wide")
 
 # =========================
