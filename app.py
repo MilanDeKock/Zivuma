@@ -308,7 +308,7 @@ for _, r in mapping_df.iterrows():
         errors.append(f"{bat} ↦ {fg_code}: extra={extra} | missing={missing}")
 
 if errors:
-    st.error("Component mismatch detected — cannot create stock adjustment:\n- " + "\n- ".join(errors))
+    st.error("Component mismatch — one or more selected batches include SKUs not defined in the selected FG’s BOM.")
     st.stop()
 
 # -------------------------
