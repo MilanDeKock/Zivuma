@@ -10,14 +10,14 @@ import streamlit as st
 # ---- Page setup ----
 st.set_page_config(
     page_title="Zivuma Bulk Assembly Tool",
-    page_icon="Zivuma.jpg",
+    page_icon="Zivuma.png",
     layout="centered",
 )
 
 # ---- Header row ----
 col1, col2 = st.columns([1, 8])  # left column narrow, right wide
 with col1:
-    st.image("Zivuma.jpg", width=70)   # logo on the left
+    st.image("Zivuma.png", width=70)   # logo on the left
 with col2:
     st.title("Zivuma Bulk Assembly Tool")  # title next to it
 
