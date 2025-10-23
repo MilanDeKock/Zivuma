@@ -295,7 +295,7 @@ comps_out = comp.rename(columns={
     AV["location"]: "Location",
     AV["sku"]: "SKU",
     AV["name"]: "Name",
-    AV["bin"]: "",
+    AV["bin"]: "Bin",
     AV["batch"]: "BatchSerialNumber",
 })[ADJ_HEADERS].copy()
 
