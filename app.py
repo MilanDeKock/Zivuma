@@ -227,7 +227,7 @@ if clean_df.empty and mismatch_df.empty:
 #         st.dataframe(show.sort_values([AV["batch"], AV["sku"]]), use_container_width=True)
 
 if not mismatch_df.empty:
-    with st.expander("Batches needing inspection (qty/location mismatch)", expanded=False):
+    with st.expander("Batches needing inspection (quantity/location mismatch)", expanded=False):
         show = mismatch_df[[AV["batch"], AV["sku"], AV["name"], AV["onhand"], AV["location"]]].copy()
         st.dataframe(show.sort_values([AV["batch"], AV["sku"]]), use_container_width=True)
 
