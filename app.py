@@ -200,13 +200,13 @@ FG_NAME = dict(zip(fg_df["ProductSKU"], fg_df["ProductName"]))
 bcol = AV["batch"]
 map_seed = (
     status.loc[status["is_clean"], [bcol, "shared_loc", "shared_qty"]]
-    .rename(columns={bcol: "Batch", "shared_loc": "Location", "shared_qty": "FG_Qty"})
+    .rename(columns={bcol: "Batch", "shared_loc": "Location", "shared_qty": "Finished Goods QTY"})
     .sort_values("Batch")
 )
 map_seed["Use"] = True
-map_seed["FG_SKU"] = ""
+map_seed["Finished Goods SKU"] = ""
 
-# Editor on one line: Use | Batch | FG | Location | FG_Qty
+# Editor on one line: Use | Batch | FG | Location | Finished Goods QTY
 mapping_df = st.data_editor(
     map_seed[["Use", "Batch", "Finished Goods SKU", "Location", "Finished Goods QTY"]],
     use_container_width=True,
@@ -215,9 +215,9 @@ mapping_df = st.data_editor(
     column_config={
         "Use": st.column_config.CheckboxColumn(help="Tick to include this batch in the adjustment"),
         "Batch": st.column_config.TextColumn(disabled=True),
-        "FG_SKU": st.column_config.SelectboxColumn(options=FG_OPTIONS, required=False, help="Pick FG SKU from BOM"),
+        "Finished Goods SKU": st.column_config.SelectboxColumn(options=FG_OPTIONS, required=False, help="Pick FG SKU from BOM"),
         "Location": st.column_config.TextColumn(disabled=True),
-        "FG_Qty": st.column_config.NumberColumn(disabled=True, help="Auto from shared OnHand"),
+        "Finished Goods QTY": st.column_config.NumberColumn(disabled=True, help="Auto from shared OnHand"),
     },
 )
 
@@ -228,13 +228,13 @@ if mapping_df.empty:
     st.stop()
 
 # Validate FG selections and qty
-_missing = mapping_df["FG_SKU"].eq("") | mapping_df["FG_SKU"].isna()
-_zeroqty = ~mapping_df["FG_Qty"].astype(float).gt(0)
+_missing = mapping_df["Finished Goods SKU"].eq("") | mapping_df["Finished Goods SKU"].isna()
+_zeroqty = ~mapping_df["Finished Goods QTY"].astype(float).gt(0)
 if _missing.any():
     st.error("Please select an FG SKU for every selected batch.")
     st.stop()
 if _zeroqty.any():
-    st.error("One or more selected batches have FG_Qty ≤ 0 (not processable).")
+    st.error("One or more selected batches have Finished Goods QTY ≤ 0 (not processable).")
     st.stop()
 
 # -------------------------
@@ -253,7 +253,7 @@ sel_rows = clean_df[clean_df[bcol].isin(mapping_df["Batch"])].copy()
 errors = []
 for _, r in mapping_df.iterrows():
     bat = r["Batch"]
-    fg_code = r["FG_SKU"]
+    fg_code = r["Finished Goods SKU"]
     batch_components = set(sel_rows.loc[sel_rows[bcol] == bat, AV["sku"]].astype(str).unique())
     bom_set = bom_components_by_fg.get(fg_code, set())
     extra = sorted(batch_components - bom_set)
@@ -306,9 +306,9 @@ batch_comp_value = sel_rows.groupby(bcol)[AV["stock_value"]].sum().to_dict()
 fg_in_rows = []
 for _, r in mapping_df.iterrows():
     bat = r["Batch"]
-    fg_code = r["FG_SKU"]
+    fg_code = r["Finished Goods SKU"]
     fg_name = FG_NAME.get(fg_code, "")
-    shared_qty = float(r["FG_Qty"])
+    shared_qty = float(r["Finished Goods QTY"])
     shared_loc = r["Location"]
 
     if shared_qty <= 0:
