@@ -10,7 +10,7 @@ st.set_page_config(page_title="Zivuma Bulk Assembly Tool", page_icon="Zivuma.jpg
 # ---- Page setup ----
 st.set_page_config(
     page_title="Zivuma Bulk Assembly Tool",
-    page_icon="Zivuma.jpg",   # or URL
+    page_icon="Zivuma.jpg",
     layout="wide",
 )
 
