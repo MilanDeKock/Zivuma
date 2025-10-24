@@ -3,24 +3,25 @@
 # deps: pip install streamlit pandas
 
 from datetime import datetime
+import unicodedata, re
 import pandas as pd
 import streamlit as st
 
-
-# ---- Page setup ----
+# -------------------------
+# Page setup
+# -------------------------
 st.set_page_config(
     page_title="Zivuma Bulk Assembly Tool",
     page_icon="Zivuma.png",
     layout="centered",
 )
 
-# ---- Header row ----
-col1, col2 = st.columns([1, 8])  # left column narrow, right wide
+# Header row
+col1, col2 = st.columns([1, 8])
 with col1:
-    st.image("Zivuma.png", width=70)   # logo on the left
+    st.image("Zivuma.png", width=70)
 with col2:
-    st.title("Zivuma Bulk Assembly Tool")  # title next to it
-
+    st.title("Zivuma Bulk Assembly Tool")
 
 # -------------------------
 # Config: column mappings
@@ -71,9 +72,18 @@ ADJ_HEADERS = [
 # -------------------------
 # Helpers
 # -------------------------
+def normalize_text(s: str) -> str:
+    """Trim, remove NBSP/zero-width, NFKC-normalize. Always returns a str."""
+    if s is None:
+        return ""
+    s = str(s).replace("\u00A0", " ")                       # NBSP -> space
+    s = re.sub(r"[\u200B-\u200D\uFEFF]", "", s)            # zero-width chars
+    return unicodedata.normalize("NFKC", s).strip()
+
 def read_csv_strip(file) -> pd.DataFrame:
-    df = pd.read_csv(file)
-    df = df.rename(columns=lambda c: str(c).strip())
+    # Keep as strings; tolerate UTF-8 BOM; python engine is more forgiving
+    df = pd.read_csv(file, dtype=str, encoding="utf-8-sig", engine="python")
+    df = df.rename(columns=lambda c: normalize_text(c))
     return df
 
 def is_availability(df: pd.DataFrame) -> bool:
@@ -84,19 +94,28 @@ def is_bom(df: pd.DataFrame) -> bool:
     return set(REQUIRED_BOM).issubset(set(df.columns))
 
 def prep_availability(df: pd.DataFrame) -> pd.DataFrame:
-    # Normalize
+    # Normalize numerics
     df[AV["onhand"]] = pd.to_numeric(df[AV["onhand"]], errors="coerce").fillna(0)
     df[AV["stock_value"]] = pd.to_numeric(df[AV["stock_value"]], errors="coerce").fillna(0)
+
     # Treat blanks as NA for key text fields
     for c in [AV["sku"], AV["name"], AV["batch"], AV["location"], AV["bin"]]:
-        df[c] = df[c].astype(str).str.strip()
+        df[c] = df[c].map(normalize_text)
         df.loc[df[c].isin(["", "nan", "None", "NaN"]), c] = pd.NA
+
     # Ignore rows with blank/NA BatchSerialNumber entirely
     df = df[df[AV["batch"]].notna()].copy()
     # If Bin is NA, keep as NA now; we'll blank it out at export
     return df
 
 def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
+    """Robust BOM prep:
+       - Ensure columns and order
+       - Normalize Quantity (negatives->abs, all-zero export bug -> 1)
+       - Normalize text (unicode/space)
+       - Drop blank key rows
+       - Consolidate true duplicates strictly by (ProductSKU, ComponentSKU) summing Quantity
+    """
     # Ensure all BOM columns present and in order
     for c in BOM_COLS:
         if c not in df.columns:
@@ -105,49 +124,58 @@ def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- Normalize Quantity safely ---
     q = pd.to_numeric(df["Quantity"], errors="coerce")
-
     any_pos = (q > 0).any()
     any_neg = (q < 0).any()
     all_zero = (q == 0).all() and q.notna().all()
 
     if any_pos and not any_neg:
-        # looks fine, leave as-is
-        pass
+        pass  # looks fine
     elif any_neg and not any_pos:
-        # negative consumption convention → make positive
-        q = q.abs()
+        q = q.abs()  # negative consumption convention
     elif all_zero:
-        # export bug: UI shows 1 but CSV wrote 0.0000000000
-        q = pd.Series(1, index=q.index)
+        q = pd.Series(1, index=q.index)  # browser export bug: all zeros where UI shows 1
     else:
-        # mixed or invalid
         bad_ix = q[q.isna() | (q <= 0)].index
         excel_rows = [i + 2 for i in bad_ix.tolist()[:10]]
-        raise ValueError(
-            f"BOM CSV: invalid Quantity values (NaN/≤0) at Excel rows {excel_rows}"
-        )
+        raise ValueError(f"BOM CSV: invalid Quantity values (NaN/≤0) at Excel rows {excel_rows}")
 
     df["Quantity"] = q.astype("Int64")
 
     # --- Clean text columns ---
     for c in ["Action", "ProductSKU", "ProductName", "ComponentSKU", "ComponentName"]:
-        df[c] = df[c].fillna("").astype(str).str.strip()
+        df[c] = df[c].map(normalize_text)
 
-    # --- Final validation ---
+    # --- Drop rows with blank SKUs (prevents false dupes on empty keys) ---
+    pre = len(df)
+    df = df[(df["ProductSKU"] != "") & (df["ComponentSKU"] != "")].copy()
+    # (Optional) visibility: st.info(f"Removed {pre-len(df)} blank-key row(s).") if you want
+
+    # --- Consolidate duplicates strictly by SKU key (NEVER by names) ---
+    KEY = ["ProductSKU","ComponentSKU"]
+
+    # Consolidation aggregator: sum Quantity, take first non-empty for text fields
+    def first_nonempty(x):
+        for v in x:
+            if isinstance(v, str) and v.strip():
+                return v
+        return x.iloc[0] if len(x) else ""
+
+    agg = {c: "first" for c in df.columns}
+    agg["Quantity"] = "sum"
+    for c in ["Action","ProductName","ComponentName"]:
+        if c in agg:
+            agg[c] = first_nonempty
+
+    # Group strictly by keys
+    df = df.groupby(KEY, as_index=False, dropna=False).agg(agg).copy()
+
+    # --- Final guard ---
     if not df["Quantity"].gt(0).all():
-        raise ValueError("BOM CSV: all Quantity values must be numeric and > 0.")
+        bad_ix = df.index[~df["Quantity"].gt(0)]
+        raise ValueError(f"BOM CSV: Quantity must be > 0. First bad Excel rows: {[i+2 for i in bad_ix[:10]]}")
 
-    dup = df.duplicated(subset=["ProductSKU", "ComponentSKU"], keep=False)
-    if dup.any():
-        pairs = (
-            df.loc[dup, ["ProductSKU", "ComponentSKU"]]
-            .drop_duplicates()
-            .values.tolist()
-        )
-        raise ValueError(f"BOM CSV has duplicate (ProductSKU, ComponentSKU) pairs: {pairs}")
-
-    return df
-
+    # Keep order
+    return df[BOM_COLS]
 
 def find_clean_batches(av_df: pd.DataFrame):
     """
@@ -163,7 +191,6 @@ def find_clean_batches(av_df: pd.DataFrame):
     if dup.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    # For uniqueness, treat blanks as NA
     def nunique_ignore_na(s):
         return s.dropna().nunique()
 
@@ -230,16 +257,10 @@ for name, df in dfs:
 
 if av is None or bom is None:
     st.error("Could not auto-detect the files. Ensure one CSV contains Availability headers and the other contains BOM headers.")
-    # (Optional) Uncomment to view quick previews for debugging:
+    # Debug preview if needed:
     # for name, df in dfs:
     #     st.write(name, df.columns.tolist())
     st.stop()
-
-# (Optional PREVIEWS — remove or keep commented to avoid showing)
-# with st.expander("Preview Availability (first 100 rows)", expanded=False):
-#     st.dataframe(av.head(100), use_container_width=True)
-# with st.expander("Preview BOM (first 100 rows)", expanded=False):
-#     st.dataframe(bom.head(100), use_container_width=True)
 
 # -------------------------
 # Clean vs mismatch
@@ -248,19 +269,6 @@ clean_df, mismatch_df, status = find_clean_batches(av)
 if clean_df.empty and mismatch_df.empty:
     st.warning("No duplicate batch numbers found (after excluding blank/NA batches). Nothing to process.")
     st.stop()
-
-# (Optional metrics — comment these out to hide)
-# colA, colB = st.columns(2)
-# with colA:
-#     st.metric("Duplicate batch rows", len(clean_df) + len(mismatch_df))
-# with colB:
-#     st.metric("Clean batches", int(status["is_clean"].sum()) if not status.empty else 0)
-
-# (Optional mismatch table — comment out to hide)
-# if not mismatch_df.empty:
-#     with st.expander("Batches needing inspection (quantity/location mismatch)", expanded=False):
-#         show = mismatch_df[[AV["batch"], AV["sku"], AV["name"], AV["onhand"], AV["location"]]].copy()
-#         st.dataframe(show.sort_values([AV["batch"], AV["sku"]]), use_container_width=True)
 
 if not mismatch_df.empty:
     with st.expander("Batches needing inspection (quantity/location mismatch)", expanded=False):
@@ -288,7 +296,7 @@ map_seed = (
     .rename(columns={bcol: "Batch", "shared_loc": "Location", "shared_qty": "FG_Qty"})
     .sort_values("Batch")
 )
-map_seed["Use"] = False           # <-- default unchecked
+map_seed["Use"] = False
 map_seed["FG_SKU"] = ""
 
 mapping_df = st.data_editor(
@@ -368,7 +376,8 @@ comp["UnitCost"] = comp.apply(
 
 comp["Zero/NonZero"] = "NonZero"
 comp["ExpiryDate_YYYYMMDD"] = comp[AV["expiry"]].map(yyyymmdd)
-comp["Quantity"] = 0
+# FIX: Quantity must be negative OnHand for OUT lines
+comp["Quantity"] = -comp[AV["onhand"]].astype(float)
 comp["Comments"] = "Auto: Consolidate to FG (per batch mapping)"
 comp["ReceivedDate_YYYYMMDD"] = TODAY_YYYYMMDD
 
@@ -384,16 +393,16 @@ comps_out = comp.rename(columns={
 })[ADJ_HEADERS].copy()
 
 # Value per batch to allocate to FG
-batch_comp_value = sel_rows.groupby(bcol)[AV["stock_value"]].sum().to_dict()
+batch_comp_value = sel_rows.groupby(AV["batch"])[AV["stock_value"]].sum().to_dict()
 
 # FG IN
 fg_in_rows = []
-FG_NAME = dict(zip(fg_df["ProductSKU"], fg_df["ProductName"]))
+FG_NAME_MAP = dict(zip(fg_df["ProductSKU"], fg_df["ProductName"]))
 
 for _, r in mapping_df.iterrows():
     bat = r["Batch"]
     fg_code = r["FG_SKU"]
-    fg_name = FG_NAME.get(fg_code, "")
+    fg_name = FG_NAME_MAP.get(fg_code, "")
     shared_qty = float(r["FG_Qty"])
     shared_loc = r["Location"]
 
@@ -409,7 +418,7 @@ for _, r in mapping_df.iterrows():
         "Location": shared_loc,
         "SKU": fg_code,
         "Name": fg_name,
-        "Bin": "",  # FG line bin left blank (adjust if you need something else)
+        "Bin": "",  # FG line bin left blank
         "BatchSerialNumber": bat,
         "ExpiryDate_YYYYMMDD": "",
         "Quantity": shared_qty,
@@ -425,6 +434,7 @@ combined = pd.concat([comps_out, fg_in], ignore_index=True)
 
 st.subheader("Preview of stock adjustment file")
 st.dataframe(combined, use_container_width=True)
+
 # -------------------------
 # Download
 # -------------------------
