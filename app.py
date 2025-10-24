@@ -377,7 +377,7 @@ comp["UnitCost"] = comp.apply(
 comp["Zero/NonZero"] = "NonZero"
 comp["ExpiryDate_YYYYMMDD"] = comp[AV["expiry"]].map(yyyymmdd)
 # FIX: Quantity must be negative OnHand for OUT lines
-comp["Quantity"] = -comp[AV["onhand"]].astype(float)
+comp["Quantity"] = 0
 comp["Comments"] = "Auto: Consolidate to FG (per batch mapping)"
 comp["ReceivedDate_YYYYMMDD"] = TODAY_YYYYMMDD
 
