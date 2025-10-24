@@ -102,16 +102,52 @@ def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = None
     df = df[BOM_COLS].copy()
-    df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce').astype('Int64')
-    for c in ["Action","ProductSKU","ProductName","ComponentSKU","ComponentName"]:
+
+    # --- Normalize Quantity safely ---
+    q = pd.to_numeric(df["Quantity"], errors="coerce")
+
+    any_pos = (q > 0).any()
+    any_neg = (q < 0).any()
+    all_zero = (q == 0).all() and q.notna().all()
+
+    if any_pos and not any_neg:
+        # looks fine, leave as-is
+        pass
+    elif any_neg and not any_pos:
+        # negative consumption convention → make positive
+        q = q.abs()
+    elif all_zero:
+        # export bug: UI shows 1 but CSV wrote 0.0000000000
+        q = pd.Series(1, index=q.index)
+    else:
+        # mixed or invalid
+        bad_ix = q[q.isna() | (q <= 0)].index
+        excel_rows = [i + 2 for i in bad_ix.tolist()[:10]]
+        raise ValueError(
+            f"BOM CSV: invalid Quantity values (NaN/≤0) at Excel rows {excel_rows}"
+        )
+
+    df["Quantity"] = q.astype("Int64")
+
+    # --- Clean text columns ---
+    for c in ["Action", "ProductSKU", "ProductName", "ComponentSKU", "ComponentName"]:
         df[c] = df[c].fillna("").astype(str).str.strip()
+
+    # --- Final validation ---
     if not df["Quantity"].gt(0).all():
         raise ValueError("BOM CSV: all Quantity values must be numeric and > 0.")
-    dup = df.duplicated(subset=["ProductSKU","ComponentSKU"], keep=False)
+
+    dup = df.duplicated(subset=["ProductSKU", "ComponentSKU"], keep=False)
     if dup.any():
-        pairs = df.loc[dup, ["ProductSKU","ComponentSKU"]].drop_duplicates().values.tolist()
+        pairs = (
+            df.loc[dup, ["ProductSKU", "ComponentSKU"]]
+            .drop_duplicates()
+            .values.tolist()
+        )
         raise ValueError(f"BOM CSV has duplicate (ProductSKU, ComponentSKU) pairs: {pairs}")
+
     return df
+
 
 def find_clean_batches(av_df: pd.DataFrame):
     """
