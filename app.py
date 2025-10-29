@@ -462,18 +462,19 @@ for _, r in mapping_df.iterrows():
     fg_unit_cost = round(fg_unit_cost, 4)
 
     fg_in_rows.append({
-        "Zero/NonZero": "Zero",
-        "Location": shared_loc,
-        "SKU": fg_code,
-        "Name": fg_name,
-        "Bin": "",  # FG line bin left blank
-        "BatchSerialNumber": "BatchSerialNumber": "" if fg_code in NO_BATCH_SKUS else bat,
-        "ExpiryDate_YYYYMMDD": "",
-        "Quantity": shared_qty,
-        "UnitCost": fg_unit_cost,
-        "Comments": f"Auto: Consolidate from {bat}",
-        "ReceivedDate_YYYYMMDD": TODAY_YYYYMMDD,
-    })
+    "Zero/NonZero": "Zero",
+    "Location": shared_loc,
+    "SKU": fg_code,
+    "Name": fg_name,
+    "Bin": "",
+    "BatchSerialNumber": "" if fg_code in NO_BATCH_SKUS else bat,
+    "ExpiryDate_YYYYMMDD": "",
+    "Quantity": shared_qty,
+    "UnitCost": fg_unit_cost,
+    "Comments": f"Auto: Consolidate from {bat}",
+    "ReceivedDate_YYYYMMDD": TODAY_YYYYMMDD,
+})
+
 
 fg_in = pd.DataFrame(fg_in_rows, columns=ADJ_HEADERS)
 
