@@ -69,6 +69,14 @@ ADJ_HEADERS = [
     "ReceivedDate_YYYYMMDD",
 ]
 
+# SKUs that should never carry a batch number on FG adjustment
+NO_BATCH_SKUS = [
+    "DG-WP-008",
+    "PE-WP-008",
+    "WLN-001",
+]
+
+
 # -------------------------
 # Helpers
 # -------------------------
@@ -391,6 +399,9 @@ comps_out = comp.rename(columns={
     AV["bin"]: "Bin",
     AV["batch"]: "BatchSerialNumber",
 })[ADJ_HEADERS].copy()
+
+comps_out.loc[comps_out["SKU"].isin(NO_BATCH_SKUS), "BatchSerialNumber"] = ""
+
 
 # Value per batch to allocate to FG
 batch_comp_value = sel_rows.groupby(AV["batch"])[AV["stock_value"]].sum().to_dict()
