@@ -89,10 +89,33 @@ def normalize_text(s: str) -> str:
     return unicodedata.normalize("NFKC", s).strip()
 
 def read_csv_strip(file) -> pd.DataFrame:
-    # Keep as strings; tolerate UTF-8 BOM; python engine is more forgiving
-    df = pd.read_csv(file, dtype=str, encoding="utf-8-sig", engine="python")
-    df = df.rename(columns=lambda c: normalize_text(c))
+    """
+    Read CSV robustly, fixing common issues:
+    - UTF-8 BOM
+    - Variable delimiters
+    - Trailing commas at line ends (extra empty field)
+    - Header whitespace / NBSP
+    """
+    import io, re, unicodedata
+
+    # Read raw text, clean trailing commas
+    raw = file.read()
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8-sig", errors="ignore")
+
+    # Remove trailing commas before line breaks (e.g., "...,\n" -> "\n")
+    raw_clean = re.sub(r",+\r?\n", "\n", raw)
+
+    # Fix weird unicode spaces in header line
+    first_line, *rest = raw_clean.splitlines()
+    first_line = unicodedata.normalize("NFKC", first_line).replace("\u00A0", " ").strip()
+    raw_clean = "\n".join([first_line] + rest)
+
+    # Read into pandas from cleaned text
+    df = pd.read_csv(io.StringIO(raw_clean), dtype=str, encoding="utf-8", engine="python")
+    df = df.rename(columns=lambda c: str(c).strip())
     return df
+
 
 def is_availability(df: pd.DataFrame) -> bool:
     needed = {AV["sku"], AV["name"], AV["batch"], AV["onhand"], AV["location"], AV["bin"], AV["expiry"], AV["stock_value"]}
