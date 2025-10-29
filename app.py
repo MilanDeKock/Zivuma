@@ -139,47 +139,86 @@ def prep_availability(df: pd.DataFrame) -> pd.DataFrame:
     # If Bin is NA, keep as NA now; we'll blank it out at export
     return df
 
+
 def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
     """
-    BRUTE FORCE: Make every Quantity = 1 for Assembly BOM imports.
-    - Ensure required columns and ordering
-    - Clean text fields (strip/NFKC, remove NBSP/zero-width)
-    - Drop rows with blank ProductSKU/ComponentSKU
-    - Drop duplicate (ProductSKU, ComponentSKU) pairs (keep first)
-    - Set Quantity = 1 (Int64) for all rows
+    Clean and validate Assembly BOM data:
+      - Ensure required columns and correct order
+      - Normalize Quantity (negatives → positive, all-zero bug → 1)
+      - Clean text fields (strip, remove NBSP/zero-width, normalize Unicode)
+      - Drop rows with blank SKUs
+      - Consolidate true duplicates strictly by (ProductSKU, ComponentSKU)
+        -> sum Quantity, keep first non-empty text fields
     """
-    # Ensure all BOM columns present and in order
+
+    # --- Ensure all BOM columns exist and in the right order ---
     for c in BOM_COLS:
         if c not in df.columns:
             df[c] = None
     df = df[BOM_COLS].copy()
 
-    # --- Clean text fields (avoid phantom dupes) ---
+    # --- Normalize Quantity safely ---
+    q = pd.to_numeric(df["Quantity"], errors="coerce")
+
+    any_pos = (q > 0).any()
+    any_neg = (q < 0).any()
+    all_zero = (q == 0).all() and q.notna().all()
+
+    if any_pos and not any_neg:
+        pass  # looks fine
+    elif any_neg and not any_pos:
+        q = q.abs()  # negative consumption convention
+    elif all_zero:
+        q = pd.Series(1, index=q.index)  # browser export bug: all zeros where UI shows 1
+    else:
+        bad_ix = q[q.isna() | (q <= 0)].index
+        excel_rows = [i + 2 for i in bad_ix.tolist()[:10]]
+        raise ValueError(
+            f"BOM CSV: invalid Quantity values (NaN/≤0) at Excel rows {excel_rows}"
+        )
+
+    df["Quantity"] = q.astype("Int64")
+
+    # --- Clean text fields ---
     import unicodedata, re
+
     def norm(s: str) -> str:
-        if s is None: return ""
-        s = str(s).replace("\u00A0", " ")
-        s = re.sub(r"[\u200B-\u200D\uFEFF]", "", s)  # zero-widths
+        if s is None:
+            return ""
+        s = str(s).replace("\u00A0", " ")  # NBSP
+        s = re.sub(r"[\u200B-\u200D\uFEFF]", "", s)  # zero-width
         return unicodedata.normalize("NFKC", s).strip()
 
-    for c in ["Action","ProductSKU","ProductName","ComponentSKU","ComponentName"]:
+    for c in ["Action", "ProductSKU", "ProductName", "ComponentSKU", "ComponentName"]:
         df[c] = df[c].fillna("").astype(str).map(norm)
 
     # --- Drop rows with blank keys ---
     df = df[(df["ProductSKU"] != "") & (df["ComponentSKU"] != "")].copy()
 
-    # --- Keep only one row per (ProductSKU, ComponentSKU) ---
-    KEY = ["ProductSKU","ComponentSKU"]
-    df = df.drop_duplicates(subset=KEY, keep="first").copy()
+    # --- Consolidate true duplicates strictly by SKU+Component ---
+    KEY = ["ProductSKU", "ComponentSKU"]
 
-    # --- Force Quantity = 1 for all rows ---
-    df["Quantity"] = pd.Series(1, index=df.index).astype("Int64")
+    def first_nonempty(x):
+        for v in x:
+            if isinstance(v, str) and v.strip():
+                return v
+        return x.iloc[0] if len(x) else ""
 
-    # --- Final guard (paranoia) ---
+    agg = {c: "first" for c in df.columns}
+    agg["Quantity"] = "sum"
+    for c in ["Action", "ProductName", "ComponentName"]:
+        if c in agg:
+            agg[c] = first_nonempty
+
+    df = df.groupby(KEY, as_index=False, dropna=False).agg(agg).copy()
+
+    # --- Final guard ---
     if not df["Quantity"].gt(0).all():
-        raise ValueError("BOM CSV: Quantity must be > 0 (after forcing to 1).")
+        bad_ix = df.index[~df["Quantity"].gt(0)]
+        raise ValueError(
+            f"BOM CSV: Quantity must be > 0. First bad Excel rows: {[i + 2 for i in bad_ix[:10]]}"
+        )
 
-    # Keep column order for downstream code
     return df[BOM_COLS]
 
 
