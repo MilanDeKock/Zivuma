@@ -1,9 +1,8 @@
-#HBYN
 # app.py
 # deps: pip install streamlit pandas
 
 from datetime import datetime
-import unicodedata, re
+import unicodedata, re, io, csv
 import pandas as pd
 import streamlit as st
 
@@ -69,13 +68,12 @@ ADJ_HEADERS = [
     "ReceivedDate_YYYYMMDD",
 ]
 
-# SKUs that should never carry a batch number on FG adjustment
+# SKUs that should never carry a batch number on FG adjustment (FG IN lines)
 NO_BATCH_SKUS = [
     "DG-WP-008",
     "PE-WP-008",
     "WLN-001",
 ]
-
 
 # -------------------------
 # Helpers
@@ -98,24 +96,86 @@ def is_availability(df: pd.DataFrame) -> bool:
     needed = {AV["sku"], AV["name"], AV["batch"], AV["onhand"], AV["location"], AV["bin"], AV["expiry"], AV["stock_value"]}
     return needed.issubset(set(df.columns))
 
-def is_bom(df: pd.DataFrame) -> bool:
-    return set(REQUIRED_BOM).issubset(set(df.columns))
+# ---------- Assembly BOM robust header normalization ----------
+# Canonical schema & synonyms for BOM headers
+REQUIRED_BOM_COLS = {
+    "ProductSKU": ["ProductSKU", "Product Code", "SKU", "Item Code"],
+    "ProductName": ["ProductName", "Name", "Item Name", "Description"],
+    "ComponentSKU": ["ComponentSKU", "Component Code", "Component", "Part Code", "Sub-Item SKU"],
+    "ComponentName": ["ComponentName", "Component Name", "Part Name", "Sub-Item Name"],
+    "Quantity": ["Quantity", "Qty", "QTY"],
+}
 
-def prep_availability(df: pd.DataFrame) -> pd.DataFrame:
-    # Normalize numerics
-    df[AV["onhand"]] = pd.to_numeric(df[AV["onhand"]], errors="coerce").fillna(0)
-    df[AV["stock_value"]] = pd.to_numeric(df[AV["stock_value"]], errors="coerce").fillna(0)
+def _canon(s: str) -> str:
+    return (s or "").replace("\ufeff","").strip().replace("-", " ").replace("_"," ").lower()
 
-    # Treat blanks as NA for key text fields
-    for c in [AV["sku"], AV["name"], AV["batch"], AV["location"], AV["bin"]]:
-        df[c] = df[c].map(normalize_text)
-        df.loc[df[c].isin(["", "nan", "None", "NaN"]), c] = pd.NA
+def _build_syn_map() -> dict:
+    syn = {}
+    for canon, alts in REQUIRED_BOM_COLS.items():
+        for k in [canon] + alts:
+            syn[_canon(k)] = canon
+    return syn
 
-    # Ignore rows with blank/NA BatchSerialNumber entirely
-    df = df[df[AV["batch"]].notna()].copy()
-    # If Bin is NA, keep as NA now; we'll blank it out at export
+_SYN = _build_syn_map()
+
+def _rename_bom_to_canonical(df: pd.DataFrame) -> pd.DataFrame:
+    newcols = {c: _SYN.get(_canon(c), c.strip()) for c in df.columns}
+    df = df.rename(columns=newcols)
+    # Deduplicate headings like ProductSKU.1 if Excel exported duplicates
+    df.columns = pd.io.parsers.ParserBase({'names': df.columns})._maybe_dedup_names(df.columns)
     return df
 
+def _sniff_delimiter(sample_text: str) -> str:
+    try:
+        return csv.Sniffer().sniff(sample_text, delimiters=[",",";","\t","|"]).delimiter
+    except Exception:
+        return ","
+
+def _read_text_from_bytes(raw_bytes: bytes) -> str:
+    try:
+        return raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw_bytes.decode("latin-1")
+
+def load_assembly_bom_from_bytes(raw_bytes: bytes) -> pd.DataFrame:
+    """
+    Robust CSV reader for Assembly BOM:
+    - Handles UTF-8 BOM
+    - Detects delimiter (, ; \t |)
+    - Keeps all fields as text (no NA coercion)
+    - Renames headers to canonical names
+    - Validates that ProductSKU exists (FG picker depends on it)
+    - Trims whitespace from all cells
+    """
+    text = _read_text_from_bytes(raw_bytes)
+    delim = _sniff_delimiter(text[:2000])
+
+    df = pd.read_csv(
+        io.StringIO(text),
+        sep=delim,
+        dtype=str,
+        keep_default_na=False,
+        na_filter=False,
+        engine="python",
+    )
+
+    df = _rename_bom_to_canonical(df)
+
+    if "ProductSKU" not in df.columns:
+        raise ValueError(
+            f"Assembly BOM missing required column 'ProductSKU'. Found: {list(df.columns)}"
+        )
+
+    # Final tidy
+    for c in df.columns:
+        df[c] = df[c].astype(str).str.strip()
+    return df
+
+def is_bom_like(df: pd.DataFrame) -> bool:
+    """Lightweight check on already-read frames (used only for debugging)."""
+    return {"ProductSKU","ComponentSKU","Quantity"}.issubset(set(df.columns))
+
+# ---------- Existing BOM prep stays, now fed by the robust loader ----------
 def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
     """Robust BOM prep:
        - Ensure columns and order
@@ -153,15 +213,12 @@ def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
     for c in ["Action", "ProductSKU", "ProductName", "ComponentSKU", "ComponentName"]:
         df[c] = df[c].map(normalize_text)
 
-    # --- Drop rows with blank SKUs (prevents false dupes on empty keys) ---
-    pre = len(df)
+    # --- Drop rows with blank SKUs ---
     df = df[(df["ProductSKU"] != "") & (df["ComponentSKU"] != "")].copy()
-    # (Optional) visibility: st.info(f"Removed {pre-len(df)} blank-key row(s).") if you want
 
-    # --- Consolidate duplicates strictly by SKU key (NEVER by names) ---
+    # --- Consolidate duplicates strictly by SKU key ---
     KEY = ["ProductSKU","ComponentSKU"]
 
-    # Consolidation aggregator: sum Quantity, take first non-empty for text fields
     def first_nonempty(x):
         for v in x:
             if isinstance(v, str) and v.strip():
@@ -174,15 +231,12 @@ def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
         if c in agg:
             agg[c] = first_nonempty
 
-    # Group strictly by keys
     df = df.groupby(KEY, as_index=False, dropna=False).agg(agg).copy()
 
-    # --- Final guard ---
     if not df["Quantity"].gt(0).all():
         bad_ix = df.index[~df["Quantity"].gt(0)]
         raise ValueError(f"BOM CSV: Quantity must be > 0. First bad Excel rows: {[i+2 for i in bad_ix[:10]]}")
 
-    # Keep order
     return df[BOM_COLS]
 
 def find_clean_batches(av_df: pd.DataFrame):
@@ -246,28 +300,36 @@ if not uploads or len(uploads) < 2:
     st.info("Please upload **two** CSV files (Availability Report + Assembly BOM Export).")
     st.stop()
 
-# Try to auto-detect which is which
-av, bom = None, None
-dfs = []
-for f in uploads:
-    try:
-        df = read_csv_strip(f)
-        dfs.append((f.name, df))
-    except Exception as e:
-        st.error(f"Could not read {f.name}: {e}")
-        st.stop()
+# Read bytes once per file to allow multiple parse strategies
+files = [(f.name, f.getvalue()) for f in uploads]
 
-for name, df in dfs:
-    if is_availability(df) and av is None:
-        av = prep_availability(df)
-    elif is_bom(df) and bom is None:
-        bom = prep_bom(df)
+av, bom = None, None
+for name, raw in files:
+    # Try availability first
+    try:
+        df_try = read_csv_strip(io.BytesIO(raw))
+        if is_availability(df_try) and av is None:
+            av = prep_availability(df_try)
+            continue
+    except Exception:
+        pass
+    # Try BOM (robust loader)
+    if bom is None:
+        try:
+            bom_df = load_assembly_bom_from_bytes(raw)
+            bom = prep_bom(bom_df)
+            continue
+        except Exception:
+            pass
 
 if av is None or bom is None:
     st.error("Could not auto-detect the files. Ensure one CSV contains Availability headers and the other contains BOM headers.")
     # Debug preview if needed:
-    # for name, df in dfs:
-    #     st.write(name, df.columns.tolist())
+    # for name, raw in files:
+    #     try:
+    #         st.write(name, read_csv_strip(io.BytesIO(raw)).columns.tolist())
+    #     except:
+    #         st.write(name, "unreadable")
     st.stop()
 
 # -------------------------
@@ -384,8 +446,8 @@ comp["UnitCost"] = comp.apply(
 
 comp["Zero/NonZero"] = "NonZero"
 comp["ExpiryDate_YYYYMMDD"] = comp[AV["expiry"]].map(yyyymmdd)
-# FIX: Quantity must be negative OnHand for OUT lines
-comp["Quantity"] = 0
+# Quantity must be negative OnHand for OUT lines
+comp["Quantity"] = -pd.to_numeric(comp[AV["onhand"]], errors="coerce").fillna(0).astype(float)
 comp["Comments"] = "Auto: Consolidate to FG (per batch mapping)"
 comp["ReceivedDate_YYYYMMDD"] = TODAY_YYYYMMDD
 
@@ -399,9 +461,6 @@ comps_out = comp.rename(columns={
     AV["bin"]: "Bin",
     AV["batch"]: "BatchSerialNumber",
 })[ADJ_HEADERS].copy()
-
-comps_out.loc[comps_out["SKU"].isin(NO_BATCH_SKUS), "BatchSerialNumber"] = ""
-
 
 # Value per batch to allocate to FG
 batch_comp_value = sel_rows.groupby(AV["batch"])[AV["stock_value"]].sum().to_dict()
@@ -430,7 +489,8 @@ for _, r in mapping_df.iterrows():
         "SKU": fg_code,
         "Name": fg_name,
         "Bin": "",  # FG line bin left blank
-        "BatchSerialNumber": bat,
+        # If FG SKU is in NO_BATCH_SKUS, leave batch empty; else use the batch number
+        "BatchSerialNumber": "" if fg_code in NO_BATCH_SKUS else bat,
         "ExpiryDate_YYYYMMDD": "",
         "Quantity": shared_qty,
         "UnitCost": fg_unit_cost,
@@ -461,5 +521,8 @@ st.download_button(
 st.caption(
     "Rules: OUT → NonZero (Qty = -OnHand; UnitCost = StockValue/OnHand, Bin blanked). "
     "IN → Zero (Qty = shared OnHand per batch; UnitCost allocated so total IN value equals total OUT value per batch). "
-    "ReceivedDate = today (YYYYMMDD). Duplicate-batch checks ignore blank/NA batch numbers."
+    "ReceivedDate = today (YYYYMMDD). Duplicate-batch checks ignore blank/NA batch numbers. "
+    "FG IN batch cleared for specific SKUs: "
+    + ", ".join(NO_BATCH_SKUS)
 )
+
