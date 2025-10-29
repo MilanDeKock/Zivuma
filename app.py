@@ -117,12 +117,13 @@ def prep_availability(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
-    """Robust BOM prep:
-       - Ensure columns and order
-       - Normalize Quantity (negatives->abs, all-zero export bug -> 1)
-       - Normalize text (unicode/space)
-       - Drop blank key rows
-       - Consolidate true duplicates strictly by (ProductSKU, ComponentSKU) summing Quantity
+    """
+    BRUTE FORCE: Make every Quantity = 1 for Assembly BOM imports.
+    - Ensure required columns and ordering
+    - Clean text fields (strip/NFKC, remove NBSP/zero-width)
+    - Drop rows with blank ProductSKU/ComponentSKU
+    - Drop duplicate (ProductSKU, ComponentSKU) pairs (keep first)
+    - Set Quantity = 1 (Int64) for all rows
     """
     # Ensure all BOM columns present and in order
     for c in BOM_COLS:
@@ -130,60 +131,34 @@ def prep_bom(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = None
     df = df[BOM_COLS].copy()
 
-    # --- Normalize Quantity safely ---
-    q = pd.to_numeric(df["Quantity"], errors="coerce")
-    any_pos = (q > 0).any()
-    any_neg = (q < 0).any()
-    all_zero = (q == 0).all() and q.notna().all()
+    # --- Clean text fields (avoid phantom dupes) ---
+    import unicodedata, re
+    def norm(s: str) -> str:
+        if s is None: return ""
+        s = str(s).replace("\u00A0", " ")
+        s = re.sub(r"[\u200B-\u200D\uFEFF]", "", s)  # zero-widths
+        return unicodedata.normalize("NFKC", s).strip()
 
-    if any_pos and not any_neg:
-        pass  # looks fine
-    elif any_neg and not any_pos:
-        q = q.abs()  # negative consumption convention
-    elif all_zero:
-        q = pd.Series(1, index=q.index)  # browser export bug: all zeros where UI shows 1
-    else:
-        bad_ix = q[q.isna() | (q <= 0)].index
-        excel_rows = [i + 2 for i in bad_ix.tolist()[:10]]
-        raise ValueError(f"BOM CSV: invalid Quantity values (NaN/≤0) at Excel rows {excel_rows}")
+    for c in ["Action","ProductSKU","ProductName","ComponentSKU","ComponentName"]:
+        df[c] = df[c].fillna("").astype(str).map(norm)
 
-    df["Quantity"] = q.astype("Int64")
-
-    # --- Clean text columns ---
-    for c in ["Action", "ProductSKU", "ProductName", "ComponentSKU", "ComponentName"]:
-        df[c] = df[c].map(normalize_text)
-
-    # --- Drop rows with blank SKUs (prevents false dupes on empty keys) ---
-    pre = len(df)
+    # --- Drop rows with blank keys ---
     df = df[(df["ProductSKU"] != "") & (df["ComponentSKU"] != "")].copy()
-    # (Optional) visibility: st.info(f"Removed {pre-len(df)} blank-key row(s).") if you want
 
-    # --- Consolidate duplicates strictly by SKU key (NEVER by names) ---
+    # --- Keep only one row per (ProductSKU, ComponentSKU) ---
     KEY = ["ProductSKU","ComponentSKU"]
+    df = df.drop_duplicates(subset=KEY, keep="first").copy()
 
-    # Consolidation aggregator: sum Quantity, take first non-empty for text fields
-    def first_nonempty(x):
-        for v in x:
-            if isinstance(v, str) and v.strip():
-                return v
-        return x.iloc[0] if len(x) else ""
+    # --- Force Quantity = 1 for all rows ---
+    df["Quantity"] = pd.Series(1, index=df.index).astype("Int64")
 
-    agg = {c: "first" for c in df.columns}
-    agg["Quantity"] = "sum"
-    for c in ["Action","ProductName","ComponentName"]:
-        if c in agg:
-            agg[c] = first_nonempty
-
-    # Group strictly by keys
-    df = df.groupby(KEY, as_index=False, dropna=False).agg(agg).copy()
-
-    # --- Final guard ---
+    # --- Final guard (paranoia) ---
     if not df["Quantity"].gt(0).all():
-        bad_ix = df.index[~df["Quantity"].gt(0)]
-        raise ValueError(f"BOM CSV: Quantity must be > 0. First bad Excel rows: {[i+2 for i in bad_ix[:10]]}")
+        raise ValueError("BOM CSV: Quantity must be > 0 (after forcing to 1).")
 
-    # Keep order
+    # Keep column order for downstream code
     return df[BOM_COLS]
+
 
 def find_clean_batches(av_df: pd.DataFrame):
     """
