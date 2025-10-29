@@ -467,7 +467,7 @@ for _, r in mapping_df.iterrows():
         "SKU": fg_code,
         "Name": fg_name,
         "Bin": "",  # FG line bin left blank
-        "BatchSerialNumber": bat,
+        "BatchSerialNumber": "BatchSerialNumber": "" if fg_code in NO_BATCH_SKUS else bat,
         "ExpiryDate_YYYYMMDD": "",
         "Quantity": shared_qty,
         "UnitCost": fg_unit_cost,
